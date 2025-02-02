@@ -561,7 +561,7 @@ void Search::Worker::clear() {
 }
 
 // Use a very shallow search (e.g. one ply) for the opponent’s move
-constexpr Depth OPPONENT_EVAL_DEPTH = 8;
+constexpr Depth OPPONENT_EVAL_DEPTH = 7;
 
 // Main search function for both PV and non-PV nodes
 template<NodeType nodeType>
