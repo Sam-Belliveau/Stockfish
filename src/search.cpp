@@ -686,9 +686,19 @@ MoveValuePair Search::Worker::search(Position& pos,
         auto [predictedMove, predictedValue] = search<PV>(pos, ss, -VALUE_INFINITE, VALUE_INFINITE,
                                                           shallowDepth, false, opponentMove, true);
 
+        capture    = pos.capture_stage(predictedMove);
+        movedPiece = pos.moved_piece(predictedMove);
+        givesCheck = pos.gives_check(predictedMove);
+
         ss->currentMove = predictedMove;
         ss->pv[0]       = predictedMove;
         ss->pv[1]       = Move::none();
+
+        ss->isTTMove = (predictedMove == ttData.move);
+        ss->continuationHistory =
+          &thisThread->continuationHistory[ss->inCheck][capture][movedPiece][predictedMove.to_sq()];
+        ss->continuationCorrectionHistory =
+          &thisThread->continuationCorrectionHistory[movedPiece][predictedMove.to_sq()];
 
         if (predictedMove == Move::none() || !is_valid(predictedValue))
             return {predictedMove, predictedValue};
@@ -698,7 +708,7 @@ MoveValuePair Search::Worker::search(Position& pos,
         (ss + 1)->currentMove = Move::none();
 
         // Commit to the predicted move.
-        pos.do_move(predictedMove, st, &tt);
+        pos.do_move(predictedMove, st, givesCheck, &tt);
         auto [smove, svalue] = -search<PV>(pos, ss + 1, -VALUE_INFINITE, VALUE_INFINITE, depth - 1,
                                            false, !opponentMove, false);
         pos.undo_move(predictedMove);
