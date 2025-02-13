@@ -569,10 +569,15 @@ Value Search::Worker::simple_qsearch(Position& pos, Depth ply, Value alpha, Valu
             return alpha;
     }
 
+    if (pos.is_draw(ply) || ply >= MAX_PLY)
+        return ply >= MAX_PLY ? evaluate(pos) : VALUE_DRAW;
+
     Key posKey                     = pos.key();
     auto [ttHit, ttData, ttWriter] = tt.probe<true>(posKey);
 
-    if (ttHit && ttData.depth >= DEPTH_QS)
+    if (ttHit && is_valid(ttData.value)
+        && (ttData.bound & (ttData.value >= beta ? BOUND_LOWER : BOUND_UPPER))
+        && DEPTH_QS <= ttData.depth)
     {
         Value ttValue = value_from_tt(ttData.value, ply, pos.rule50_count());
         if (ttData.bound == BOUND_EXACT || ttValue >= beta)
@@ -594,6 +599,7 @@ Value Search::Worker::simple_qsearch(Position& pos, Depth ply, Value alpha, Valu
             continue;
 
         pos.do_move(move, st);
+        this->nodes.fetch_add(1, std::memory_order_relaxed);
         Value score = -simple_qsearch(pos, ply + 1, -beta, -alpha);
         pos.undo_move(move);
 
@@ -629,6 +635,16 @@ Search::Worker::simple_search(Position& pos, Depth ply, Depth depth, Value alpha
     if (depth <= 0)
         return {Move::none(), simple_qsearch(pos, ply, alpha, beta)};
 
+
+    if (pos.is_draw(ply) || ply >= MAX_PLY)
+        return {Move::none(),
+                (ply >= MAX_PLY && !pos.checkers()) ? evaluate(pos) : value_draw(this->nodes)};
+
+    alpha = std::max(mated_in(ply), alpha);
+    beta  = std::min(mate_in(ply + 1), beta);
+    if (alpha >= beta)
+        return {Move::none(), alpha};
+
     Key posKey                     = pos.key();
     auto [ttHit, ttData, ttWriter] = tt.probe<true>(posKey);
 
@@ -639,7 +655,9 @@ Search::Worker::simple_search(Position& pos, Depth ply, Depth depth, Value alpha
             return {Move::none(), alpha};
     }
 
-    if (ttHit && depth <= ttData.depth)
+    if (ttHit && is_valid(ttData.value)
+        && (ttData.bound & (ttData.value >= beta ? BOUND_LOWER : BOUND_UPPER))
+        && depth <= ttData.depth)
     {
         Value ttValue = value_from_tt(ttData.value, ply, pos.rule50_count());
         if (ttData.bound == BOUND_EXACT || ttValue >= beta)
@@ -656,6 +674,8 @@ Search::Worker::simple_search(Position& pos, Depth ply, Depth depth, Value alpha
     for (const Move& move : MoveList<LEGAL>(pos))
     {
         pos.do_move(move, st);
+        this->nodes.fetch_add(1, std::memory_order_relaxed);
+
         auto [_, value] = simple_search(pos, ply + 1, depth - 1, -beta, -alpha);
         value           = -value;
         pos.undo_move(move);
@@ -699,6 +719,8 @@ Search::Worker::simple_search(Position& pos, Depth ply, Depth depth, Value alpha
 
     return {bestMove, bestValue};
 }
+
+static constexpr bool OPPONENT_MODELING = true;
 
 // Main search function for both PV and non-PV nodes
 template<NodeType nodeType>
@@ -810,7 +832,7 @@ Value Search::Worker::search(
     // to save indentation, we list the condition in all code between here and there.
 
     // === Opponent Modeling Branch ===
-    if (PvNode && !rootNode && (ss->ply & 1))
+    if (OPPONENT_MODELING && PvNode && (ss->ply & 1))
     {
         ss->currentMove = Move::none();
         ss->pv[0]       = Move::none();
@@ -1009,7 +1031,7 @@ Value Search::Worker::search(
         return beta + (eval - beta) / 3;
 
     // Step 9. Null move search with verification search
-    if (cutNode && (ss - 1)->currentMove != Move::null() && eval >= beta
+    if (!OPPONENT_MODELING && cutNode && (ss - 1)->currentMove != Move::null() && eval >= beta
         && ss->staticEval >= beta - 21 * depth + 455 - 60 * improving && !excludedMove
         && pos.non_pawn_material(us) && ss->ply >= thisThread->nmpMinPly && !is_loss(beta))
     {
@@ -1061,7 +1083,7 @@ Value Search::Worker::search(
     // If we have a good enough capture (or queen promotion) and a reduced search
     // returns a value much above beta, we can (almost) safely prune the previous move.
     probCutBeta = beta + 187 - 55 * improving;
-    if (depth >= 3
+    if (!OPPONENT_MODELING && depth >= 3
         && !is_decisive(beta)
         // If value from transposition table is lower than probCutBeta, don't attempt
         // probCut there and in further interactions with transposition table cutoff
@@ -1270,7 +1292,7 @@ moves_loop:  // When in check, search starts here
             // (* Scaler) Generally, higher singularBeta (i.e closer to ttValue)
             // and lower extension margins scale well.
 
-            if (!rootNode && move == ttData.move && !excludedMove
+            if (!OPPONENT_MODELING && !rootNode && move == ttData.move && !excludedMove
                 && depth >= 5 - (thisThread->completedDepth > 32) + ss->ttPv
                 && is_valid(ttData.value) && !is_decisive(ttData.value)
                 && (ttData.bound & BOUND_LOWER) && ttData.depth >= depth - 3)
@@ -1383,14 +1405,13 @@ moves_loop:  // When in check, search starts here
         r -= ss->statScore * 1407 / 16384;
 
         // Step 17. Late moves reduction / extension (LMR)
-        if (depth >= 2 && moveCount > 1)
+        if (!OPPONENT_MODELING && depth >= 2 && moveCount > 1)
         {
             // In general we want to cap the LMR depth search at newDepth, but when
             // reduction is negative, we allow this move a limited search extension
             // beyond the first move depth.
             // To prevent problems when the max value is less than the min value,
             // std::clamp has been replaced by a more robust implementation.
-
 
             Depth d = std::max(
               1, std::min(newDepth - r / 1024, newDepth + !allNode + (PvNode && !bestMove)));
