@@ -259,6 +259,7 @@ class NullSearchManager: public ISearchManager {
     void check_time(Search::Worker&) override {}
 };
 
+using MoveValuePair = std::pair<Move, Value>;
 
 // Search::Worker is the class that does the actual search.
 // It is instantiated once per thread, and it is responsible for keeping track
@@ -294,6 +295,10 @@ class Worker {
 
    private:
     void iterative_deepening();
+    
+    // This is a simplified deterministic search function used for opponent modeling
+    Value simple_qsearch(Position& pos, Depth ply, Value alpha, Value beta);
+    MoveValuePair simple_search(Position& pos, Depth ply, Depth depth, Value alpha, Value beta);
 
     // This is the main search function, for both PV and non-PV nodes
     template<NodeType nodeType>

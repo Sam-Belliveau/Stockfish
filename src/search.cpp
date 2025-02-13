@@ -558,6 +558,82 @@ void Search::Worker::clear() {
     refreshTable.clear(networks[numaAccessToken]);
 }
 
+Value Search::Worker::simple_qsearch(Position& pos, Depth ply, Value alpha, Value beta) {
+    if (pos.checkers())
+        return simple_search(pos, ply, 1, alpha, beta).second;
+
+    StateInfo st;
+    Value     stand_pat = evaluate(pos);
+
+    if (stand_pat >= beta)
+        return stand_pat;
+
+    if (alpha < stand_pat)
+        alpha = stand_pat;
+
+    for (const Move& move : MoveList<CAPTURES>(pos))
+    {
+        if (!pos.legal(move))
+            continue;
+
+        pos.do_move(move, st);
+        Value score = -simple_qsearch(pos, ply + 1, -beta, -alpha);
+        pos.undo_move(move);
+
+        if (score > alpha)
+        {
+            alpha = score;
+
+            if (alpha >= beta)
+                return beta;
+        }
+    }
+
+    return alpha;
+}
+
+
+MoveValuePair
+Search::Worker::simple_search(Position& pos, Depth ply, Depth depth, Value alpha, Value beta) {
+    if (depth <= 0)
+        return {Move::none(), simple_qsearch(pos, ply, alpha, beta)};
+
+    StateInfo st;
+
+    Move  bestMove  = Move::none();
+    Value bestValue = -VALUE_INFINITE;
+
+    for (const Move& move : MoveList<LEGAL>(pos))
+    {
+        pos.do_move(move, st);
+        auto [_, value] = simple_search(pos, ply + 1, depth - 1, -beta, -alpha);
+        value           = -value;
+        pos.undo_move(move);
+
+        if (value > bestValue)
+        {
+            bestValue = value;
+            bestMove  = move;
+        }
+
+        else if (value > alpha)
+        {
+            alpha = value;
+            if (alpha >= beta)
+                return {bestMove, beta};
+        }
+    }
+
+    if (bestMove == Move::none() || bestValue <= -VALUE_INFINITE)
+    {
+        if (pos.checkers())
+            return {Move::none(), mated_in(ply)};
+        else
+            return {Move::none(), value_draw(nodes)};
+    }
+
+    return {bestMove, bestValue};
+}
 
 // Main search function for both PV and non-PV nodes
 template<NodeType nodeType>
@@ -667,6 +743,48 @@ Value Search::Worker::search(
 
     // At this point, if excluded, skip straight to step 6, static eval. However,
     // to save indentation, we list the condition in all code between here and there.
+
+    // === Opponent Modeling Branch ===
+    if (PvNode && !rootNode && (ss->ply & 1))
+    {
+        ss->currentMove = Move::none();
+        ss->pv[0]       = Move::none();
+
+        auto [predictedMove, predictedValue] =
+          simple_search(pos, ss->ply, 1, -VALUE_INFINITE, VALUE_INFINITE);
+
+        if (predictedMove == Move::none())
+            return predictedValue;
+
+        capture    = pos.capture_stage(predictedMove);
+        movedPiece = pos.moved_piece(predictedMove);
+        givesCheck = pos.gives_check(predictedMove);
+
+        ss->staticEval  = VALUE_NONE;
+        ss->currentMove = predictedMove;
+        ss->pv[0]       = predictedMove;
+        ss->pv[1]       = Move::none();
+
+        ss->isTTMove = (predictedMove == ttData.move);
+        ss->continuationHistory =
+          &thisThread->continuationHistory[ss->inCheck][capture][movedPiece][predictedMove.to_sq()];
+        ss->continuationCorrectionHistory =
+          &thisThread->continuationCorrectionHistory[movedPiece][predictedMove.to_sq()];
+
+        (ss + 1)->pv          = ss->pv + 1;
+        (ss + 1)->pv[0]       = Move::none();
+        (ss + 1)->currentMove = Move::none();
+
+        // Commit to the predicted move.
+        pos.do_move(predictedMove, st, givesCheck, &tt);
+        Value realValue = -search<nodeType>(pos, ss + 1, -beta, -alpha, depth - 1, cutNode);
+        pos.undo_move(predictedMove);
+
+        (ss + 1)->pv = nullptr;
+
+        return realValue;
+    }
+    // === End Opponent Modeling Branch ===
 
     // At non-PV nodes we check for an early TT cutoff
     if (!PvNode && !excludedMove && ttData.depth > depth - (ttData.value <= beta)
