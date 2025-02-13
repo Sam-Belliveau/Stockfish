@@ -569,7 +569,7 @@ Value Search::Worker::simple_qsearch(Position& pos, Depth ply, Value alpha, Valu
             return alpha;
     }
 
-    if (pos.is_draw(ply) || ply >= MAX_PLY)
+    if (threads.stop.load(std::memory_order_relaxed) || pos.is_draw(ply) || ply >= MAX_PLY)
         return ply >= MAX_PLY ? evaluate(pos) : VALUE_DRAW;
 
     Key posKey                     = pos.key();
@@ -603,6 +603,9 @@ Value Search::Worker::simple_qsearch(Position& pos, Depth ply, Value alpha, Valu
         Value score = -simple_qsearch(pos, ply + 1, -beta, -alpha);
         pos.undo_move(move);
 
+        if (threads.stop.load(std::memory_order_relaxed))
+            return VALUE_ZERO;
+
         if (score > alpha)
         {
             alpha = score;
@@ -632,11 +635,13 @@ Value Search::Worker::simple_qsearch(Position& pos, Depth ply, Value alpha, Valu
 
 MoveValuePair
 Search::Worker::simple_search(Position& pos, Depth ply, Depth depth, Value alpha, Value beta) {
+    if (is_mainthread())
+        main_manager()->check_time(*this);
+
     if (depth <= 0)
         return {Move::none(), simple_qsearch(pos, ply, alpha, beta)};
 
-
-    if (pos.is_draw(ply) || ply >= MAX_PLY)
+    if (threads.stop.load(std::memory_order_relaxed) || pos.is_draw(ply) || ply >= MAX_PLY)
         return {Move::none(),
                 (ply >= MAX_PLY && !pos.checkers()) ? evaluate(pos) : value_draw(this->nodes)};
 
@@ -679,6 +684,9 @@ Search::Worker::simple_search(Position& pos, Depth ply, Depth depth, Value alpha
         auto [_, value] = simple_search(pos, ply + 1, depth - 1, -beta, -alpha);
         value           = -value;
         pos.undo_move(move);
+
+        if (threads.stop.load(std::memory_order_relaxed))
+            return {Move::none(), VALUE_ZERO};
 
         if (value > bestValue)
         {
@@ -837,7 +845,7 @@ Value Search::Worker::search(
         ss->currentMove = Move::none();
         ss->pv[0]       = Move::none();
 
-        Depth simpleDepth = std::min(depth, 1);
+        Depth simpleDepth = std::min(depth, 2);
         auto [predictedMove, predictedValue] =
           simple_search(pos, ss->ply, simpleDepth, -VALUE_INFINITE, VALUE_INFINITE);
 
