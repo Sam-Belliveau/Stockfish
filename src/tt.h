@@ -90,9 +90,13 @@ class TranspositionTable {
 
     void
     new_search();  // This must be called at the beginning of each root search to track entry aging
-    uint8_t generation() const;  // The current age, used when writing new data to the TT
+    uint8_t generation() const;  // The current age, used when writing new data to the 
+    
+    template<bool Simple=false>
     std::tuple<bool, TTData, TTWriter>
     probe(const Key key) const;  // The main method, whose retvals separate local vs global objects
+
+    template<bool Simple=false>
     TTEntry* first_entry(const Key key)
       const;  // This is the hash function; its only external use is memory prefetching.
 
@@ -101,6 +105,7 @@ class TranspositionTable {
 
     size_t   clusterCount;
     Cluster* table = nullptr;
+    Cluster* simpleTable = nullptr;
 
     uint8_t generation8 = 0;  // Size must be not bigger than TTEntry::genBound8
 };

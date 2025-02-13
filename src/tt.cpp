@@ -152,14 +152,23 @@ static_assert(sizeof(Cluster) == 32, "Suboptimal Cluster size");
 // of clusters and each cluster consists of ClusterSize number of TTEntry.
 void TranspositionTable::resize(size_t mbSize, ThreadPool& threads) {
     aligned_large_pages_free(table);
+    aligned_large_pages_free(simpleTable);
 
     clusterCount = mbSize * 1024 * 1024 / sizeof(Cluster);
 
-    table = static_cast<Cluster*>(aligned_large_pages_alloc(clusterCount * sizeof(Cluster)));
+    table       = static_cast<Cluster*>(aligned_large_pages_alloc(clusterCount * sizeof(Cluster)));
+    simpleTable = static_cast<Cluster*>(aligned_large_pages_alloc(clusterCount * sizeof(Cluster)));
 
     if (!table)
     {
         std::cerr << "Failed to allocate " << mbSize << "MB for transposition table." << std::endl;
+        exit(EXIT_FAILURE);
+    }
+
+    if (!simpleTable)
+    {
+        std::cerr << "Failed to allocate " << mbSize << "MB for simple transposition table."
+                  << std::endl;
         exit(EXIT_FAILURE);
     }
 
@@ -182,6 +191,7 @@ void TranspositionTable::clear(ThreadPool& threads) {
             const size_t len    = i + 1 != threadCount ? stride : clusterCount - start;
 
             std::memset(&table[start], 0, len * sizeof(Cluster));
+            std::memset(&simpleTable[start], 0, len * sizeof(Cluster));
         });
     }
 
@@ -220,9 +230,10 @@ uint8_t TranspositionTable::generation() const { return generation8; }
 // to be replaced later. The replace value of an entry is calculated as its depth
 // minus 8 times its relative age. TTEntry t1 is considered more valuable than
 // TTEntry t2 if its replace value is greater than that of t2.
+template<bool Simple>
 std::tuple<bool, TTData, TTWriter> TranspositionTable::probe(const Key key) const {
 
-    TTEntry* const tte   = first_entry(key);
+    TTEntry* const tte   = first_entry<Simple>(key);
     const uint16_t key16 = uint16_t(key);  // Use the low 16 bits as key inside the cluster
 
     for (int i = 0; i < ClusterSize; ++i)
@@ -243,9 +254,19 @@ std::tuple<bool, TTData, TTWriter> TranspositionTable::probe(const Key key) cons
             TTWriter(replace)};
 }
 
-
+template<bool Simple>
 TTEntry* TranspositionTable::first_entry(const Key key) const {
-    return &table[mul_hi64(key, clusterCount)].entry[0];
+    if constexpr (Simple)
+        return &simpleTable[mul_hi64(key, clusterCount)].entry[0];
+    else
+        return &table[mul_hi64(key, clusterCount)].entry[0];
 }
+
+// Explicit instantiation of the template function
+template std::tuple<bool, TTData, TTWriter> TranspositionTable::probe<false>(const Key key) const;
+template std::tuple<bool, TTData, TTWriter> TranspositionTable::probe<true>(const Key key) const;
+
+template TTEntry* TranspositionTable::first_entry<false>(const Key key) const;
+template TTEntry* TranspositionTable::first_entry<true>(const Key key) const;
 
 }  // namespace Stockfish

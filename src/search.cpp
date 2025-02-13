@@ -562,6 +562,23 @@ Value Search::Worker::simple_qsearch(Position& pos, Depth ply, Value alpha, Valu
     if (pos.checkers())
         return simple_search(pos, ply, 1, alpha, beta).second;
 
+    if (alpha < VALUE_DRAW && pos.upcoming_repetition(ply))
+    {
+        alpha = value_draw(this->nodes);
+        if (alpha >= beta)
+            return alpha;
+    }
+
+    Key posKey                     = pos.key();
+    auto [ttHit, ttData, ttWriter] = tt.probe<true>(posKey);
+
+    if (ttHit && ttData.depth >= DEPTH_QS)
+    {
+        Value ttValue = value_from_tt(ttData.value, ply, pos.rule50_count());
+        if (ttData.bound == BOUND_EXACT || ttValue >= beta)
+            return ttValue;
+    }
+
     StateInfo st;
     Value     stand_pat = evaluate(pos);
 
@@ -583,10 +600,24 @@ Value Search::Worker::simple_qsearch(Position& pos, Depth ply, Value alpha, Valu
         if (score > alpha)
         {
             alpha = score;
-
             if (alpha >= beta)
+            {
+                ttWriter.write(posKey, value_to_tt(alpha, ply), true, BOUND_LOWER, DEPTH_QS,
+                               Move::none(), alpha, tt.generation());
                 return beta;
+            }
         }
+    }
+
+    if (alpha > stand_pat)
+    {
+        ttWriter.write(posKey, value_to_tt(alpha, ply), true, BOUND_EXACT, DEPTH_QS, Move::none(),
+                       alpha, tt.generation());
+    }
+    else
+    {
+        ttWriter.write(posKey, value_to_tt(alpha, ply), true, BOUND_UPPER, DEPTH_QS, Move::none(),
+                       alpha, tt.generation());
     }
 
     return alpha;
@@ -597,6 +628,25 @@ MoveValuePair
 Search::Worker::simple_search(Position& pos, Depth ply, Depth depth, Value alpha, Value beta) {
     if (depth <= 0)
         return {Move::none(), simple_qsearch(pos, ply, alpha, beta)};
+
+    Key posKey                     = pos.key();
+    auto [ttHit, ttData, ttWriter] = tt.probe<true>(posKey);
+
+    if (alpha < VALUE_DRAW && pos.upcoming_repetition(ply))
+    {
+        alpha = value_draw(this->nodes);
+        if (alpha >= beta)
+            return {Move::none(), alpha};
+    }
+
+    if (ttHit && depth <= ttData.depth)
+    {
+        Value ttValue = value_from_tt(ttData.value, ply, pos.rule50_count());
+        if (ttData.bound == BOUND_EXACT || ttValue >= beta)
+            return {ttData.move, ttValue};
+        if (ttValue > alpha)
+            alpha = ttValue;
+    }
 
     StateInfo st;
 
@@ -614,13 +664,17 @@ Search::Worker::simple_search(Position& pos, Depth ply, Depth depth, Value alpha
         {
             bestValue = value;
             bestMove  = move;
-        }
 
-        else if (value > alpha)
-        {
-            alpha = value;
-            if (alpha >= beta)
-                return {bestMove, beta};
+            if (value > alpha)
+            {
+                alpha = value;
+                if (alpha >= beta)
+                {
+                    ttWriter.write(posKey, value_to_tt(alpha, ply), true, BOUND_LOWER, depth,
+                                   bestMove, alpha, tt.generation());
+                    return {bestMove, alpha};
+                }
+            }
         }
     }
 
@@ -630,6 +684,17 @@ Search::Worker::simple_search(Position& pos, Depth ply, Depth depth, Value alpha
             return {Move::none(), mated_in(ply)};
         else
             return {Move::none(), value_draw(nodes)};
+    }
+
+    if (bestValue >= alpha)
+    {
+        ttWriter.write(posKey, value_to_tt(bestValue, ply), true, BOUND_EXACT, depth, bestMove,
+                       bestValue, tt.generation());
+    }
+    else
+    {
+        ttWriter.write(posKey, value_to_tt(bestValue, ply), true, BOUND_UPPER, depth, bestMove,
+                       bestValue, tt.generation());
     }
 
     return {bestMove, bestValue};
@@ -750,8 +815,9 @@ Value Search::Worker::search(
         ss->currentMove = Move::none();
         ss->pv[0]       = Move::none();
 
+        Depth simpleDepth = std::min(depth, 1);
         auto [predictedMove, predictedValue] =
-          simple_search(pos, ss->ply, 1, -VALUE_INFINITE, VALUE_INFINITE);
+          simple_search(pos, ss->ply, simpleDepth, -VALUE_INFINITE, VALUE_INFINITE);
 
         if (predictedMove == Move::none())
             return predictedValue;
